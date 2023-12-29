@@ -5,7 +5,7 @@ class ApplicationController < ActionController::Base
   # For APIs, you may want to use :null_session instead.
   protect_from_forgery with: :exception
 
-  force_ssl if: :https_enabled?
+#  force_ssl if: :https_enabled?
 
   include Localized
   include UserTrackingConcern
@@ -42,9 +42,9 @@ class ApplicationController < ActionController::Base
 
   private
 
-  def https_enabled?
-    Rails.env.production? && !request.path.start_with?('/health')
-  end
+#  def https_enabled?
+#    Rails.env.production? && !request.path.start_with?('/health')
+#  end
 
   def authorized_fetch_mode?
     ENV['AUTHORIZED_FETCH'] == 'true' || Rails.configuration.x.whitelist_mode
