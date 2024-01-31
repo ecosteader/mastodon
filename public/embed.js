@@ -23,7 +23,7 @@
     });
 
     [].forEach.call(document.querySelectorAll('iframe.mastodon-embed'), function(iframe) {
-      iframe.scrolling      = 'no';
+      iframe.scrolling      = 'yes';
       iframe.style.overflow = 'hidden';
 
       iframes.push(iframe);
