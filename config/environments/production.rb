@@ -39,12 +39,26 @@ Rails.application.configure do
   # `config.assets.precompile` and `config.assets.version` have moved to config/initializers/assets.rb
 
   # Specifies the header that your server uses for sending files.
-  config.action_dispatch.x_sendfile_header = 'X-Sendfile' # for Apache
+  config.action_dispatch.x_sendfile_header = ENV['SENDFILE_HEADER'] if ENV['SENDFILE_HEADER'].present?
+  # config.action_dispatch.x_sendfile_header = "X-Sendfile" # for Apache
+  # config.action_dispatch.x_sendfile_header = 'X-Sendfile' # for Apache
   # config.action_dispatch.x_sendfile_header = 'X-Accel-Redirect' # for NGINX
+  config.action_dispatch.x_sendfile_header = "X-Accel-Redirect" # for NGINX
 
   # Allow to specify public IP of reverse proxy if it's needed
-  config.action_dispatch.trusted_proxies = ENV['TRUSTED_PROXY_IP'].split.map { |item| IPAddr.new(item) } if ENV['TRUSTED_PROXY_IP'].present?
+  config.action_dispatch.trusted_proxies = ENV['TRUSTED_PROXY_IP'].split(/(?:\s*,\s*|\s+)/).map { |item| IPAddr.new(item) } if ENV['TRUSTED_PROXY_IP'].present?
+  # old config config.action_dispatch.trusted_proxies = ENV['TRUSTED_PROXY_IP'].split.map { |item| IPAddr.new(item) } if ENV['TRUSTED_PROXY_IP'].present?
 
+  # Force all access to the app over SSL, use Strict-Transport-Security, and use secure cookies.
+  #config.force_ssl = true
+  # config.ssl_options = {
+  #  redirect: {
+  #    exclude: ->(request) { request.path.start_with?('/health') || request.headers["Host"].end_with?('.onion') || request.headers["Host"].end_with?('.i2p') }
+  #  }
+  #}
+
+
+# CHANGE TO DEBUG to debug
   # Use the lowest log level to ensure availability of diagnostic information
   # when problems arise.
   config.log_level = ENV.fetch('RAILS_LOG_LEVEL', 'info').to_sym
@@ -53,13 +67,21 @@ Rails.application.configure do
   config.log_tags = [:request_id]
 
   # Use a different cache store in production.
+  config.cache_store = :redis_cache_store, REDIS_CACHE_PARAMS
 
-  Rails.application.configure do
-    config.cache_store = :redis_cache_store, { url: "redis://localhost:6379/0" }
-  end
-
+  # miscellaneous redis cache configs to debug
+  # Rails.application.configure do
+    # config.cache_store = :redis_cache_store, { url: "redis://localhost:6379/0" }
+  # end
  # config.cache_store = :redis_store, ENV['CACHE_REDIS_URL'], REDIS_CACHE_PARAMS
  # config.cache_store = :redis_store, ENV['REDIS_URL']
+
+
+  # Use a real queuing backend for Active Job (and separate queues per environment).
+  # config.active_job.queue_adapter     = :resque
+  # config.active_job.queue_name_prefix = "mastodon_production"
+
+  config.action_mailer.perform_caching = false
 
   # Ignore bad email addresses and do not raise email delivery errors.
   # Set this to true and configure the email server for immediate delivery to raise delivery errors.
@@ -70,7 +92,10 @@ Rails.application.configure do
   config.i18n.fallbacks = [:en]
 
   # Send deprecation notices to registered listeners.
-  config.active_support.deprecation = :notify
+  # config.active_support.deprecation = :notify
+
+  # Don't log any deprecations.
+  config.active_support.report_deprecations = false
 
   # Use default logging formatter so that PID and timestamp are not suppressed.
   config.log_formatter = ::Logger::Formatter.new
@@ -84,38 +109,75 @@ Rails.application.configure do
     end
   end
 
+  # Log to STDOUT by default
+  config.logger = ActiveSupport::Logger.new(STDOUT)
+                                       .tap  { |logger| logger.formatter = ::Logger::Formatter.new }
+                                       .then { |logger| ActiveSupport::TaggedLogging.new(logger) }
+
   # Do not dump schema after migrations.
   config.active_record.dump_schema_after_migration = false
 
   config.action_mailer.perform_caching = false
 
   # E-mails
+  outgoing_email_address = ENV.fetch('SMTP_FROM_ADDRESS', 'notifications@localhost')
+  outgoing_email_domain  = Mail::Address.new(outgoing_email_address).domain
+
   config.action_mailer.default_options = {
-    from: ENV.fetch('SMTP_FROM_ADDRESS', 'notifications@localhost'),
-    reply_to: ENV['SMTP_REPLY_TO']
+    from: outgoing_email_address,
+    message_id: -> { "<#{Mail.random_tag}@#{outgoing_email_domain}>" },
   }
 
+  config.action_mailer.default_options[:reply_to]    = ENV['SMTP_REPLY_TO'] if ENV['SMTP_REPLY_TO'].present?
+  config.action_mailer.default_options[:return_path] = ENV['SMTP_RETURN_PATH'] if ENV['SMTP_RETURN_PATH'].present?
+
+  enable_starttls = nil
+  enable_starttls_auto = nil
+
+  case ENV['SMTP_ENABLE_STARTTLS']
+  when 'always'
+    enable_starttls = true
+  when 'never'
+    enable_starttls = false
+  when 'auto'
+    enable_starttls_auto = true
+  else
+    enable_starttls_auto = ENV['SMTP_ENABLE_STARTTLS_AUTO'] != 'false'
+  end
+
   config.action_mailer.smtp_settings = {
-    :port                 => ENV['SMTP_PORT'],
-    :address              => ENV['SMTP_SERVER'],
-    :user_name            => ENV['SMTP_LOGIN'].presence,
-    :password             => ENV['SMTP_PASSWORD'].presence,
-    :domain               => ENV['SMTP_DOMAIN'] || ENV['LOCAL_DOMAIN'],
-    :authentication       => ENV['SMTP_AUTH_METHOD'] == 'none' ? nil : ENV['SMTP_AUTH_METHOD'] || :plain,
-    :ca_file              => ENV['SMTP_CA_FILE'].presence,
-    :openssl_verify_mode  => ENV['SMTP_OPENSSL_VERIFY_MODE'],
-    :enable_starttls_auto => ENV['SMTP_ENABLE_STARTTLS_AUTO'] || true,
-    :tls                  => ENV['SMTP_TLS'].presence,
+    port: ENV['SMTP_PORT'],
+    address: ENV['SMTP_SERVER'],
+    user_name: ENV['SMTP_LOGIN'].presence,
+    password: ENV['SMTP_PASSWORD'].presence,
+    domain: ENV['SMTP_DOMAIN'] || ENV['LOCAL_DOMAIN'],
+    authentication: ENV['SMTP_AUTH_METHOD'] == 'none' ? nil : ENV['SMTP_AUTH_METHOD'] || :plain,
+    ca_file: ENV['SMTP_CA_FILE'].presence || '/etc/ssl/certs/ca-certificates.crt',
+    openssl_verify_mode: ENV['SMTP_OPENSSL_VERIFY_MODE'],
+    enable_starttls: enable_starttls,
+    enable_starttls_auto: enable_starttls_auto,
+    tls: ENV['SMTP_TLS'].presence && ENV['SMTP_TLS'] == 'true',
+    ssl: ENV['SMTP_SSL'].presence && ENV['SMTP_SSL'] == 'true',
+    read_timeout: 20,
   }
 
   config.action_mailer.delivery_method = ENV.fetch('SMTP_DELIVERY_METHOD', 'smtp').to_sym
 
   config.action_dispatch.default_headers = {
-    'Server'                 => 'Mastodon',
-    'X-Frame-Options'        => 'DENY',
+    'Server' => 'Mastodon',
+    'X-Frame-Options' => 'DENY',
     'X-Content-Type-Options' => 'nosniff',
-    'X-XSS-Protection'       => '1; mode=block',
+    'X-XSS-Protection' => '0',
+    'Referrer-Policy' => 'same-origin',
   }
 
   config.x.otp_secret = ENV.fetch('OTP_SECRET')
+
+  # Enable DNS rebinding protection and other `Host` header attacks.
+  # config.hosts = [
+  #   "example.com",     # Allow requests from example.com
+  #   /.*\.example\.com/ # Allow requests from subdomains like `www.example.com`
+  # ]
+  # Skip DNS rebinding protection for the default health check endpoint.
+  # config.host_authorization = { exclude: ->(request) { request.path == "/up" } }
 end
